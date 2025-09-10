@@ -50,6 +50,7 @@ app.use('/api/auth', authRoutes);
 app.use('/api/employees', employeeRoutes);
 app.use('/api/dashboard', dashboardRoutes);
 app.use('/api/system', systemRoutes);
+app.use('/api/banners', require('./routes/banners'));
 
 // Seed route ko sirf development mein istemal karein
 if (process.env.NODE_ENV === 'development') {
