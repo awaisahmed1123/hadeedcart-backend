@@ -8,7 +8,6 @@ const Category = require('../models/Category.js');
 const upload = require('../middleware/multer.js');
 const cloudinary = require('../config/cloudinary');
 
-// Helper function to upload images to Cloudinary
 const uploadToCloudinary = async (file) => {
     const b64 = Buffer.from(file.buffer).toString("base64");
     let dataURI = "data:" + file.mimetype + ";base64," + b64;
@@ -16,7 +15,6 @@ const uploadToCloudinary = async (file) => {
     return { public_id: result.public_id, url: result.secure_url };
 };
 
-// GET all products
 router.get('/', async (req, res) => {
     try {
         const page = parseInt(req.query.page) || 1;
@@ -38,37 +36,53 @@ router.get('/', async (req, res) => {
     }
 });
 
-// GET single product
 router.get('/:id', async (req, res) => {
-     try {
-        const product = await Product.findById(req.params.id).populate('brand', 'name').populate('vendorId', 'shopName').populate('category'); 
-        if (!product) { return res.status(404).json({ msg: 'Product nahi mila' }); }
-        
+    try {
+        const product = await Product.findById(req.params.id)
+            .populate('brand', 'name')
+            .populate('vendorId', 'shopName')
+            .populate('category');
+
+        if (!product) {
+            return res.status(404).json({ msg: 'Product nahi mila' });
+        }
+
         const getCategoryPath = async (categoryId) => {
             let path = [];
+            if (!categoryId) return path;
+
             let currentCategory = await Category.findById(categoryId);
-            while (currentCategory) {
+            let depth = 0;
+            const maxDepth = 10; 
+
+            while (currentCategory && depth < maxDepth) {
                 path.unshift(currentCategory);
-                if (currentCategory.parent) { 
-                    currentCategory = await Category.findById(currentCategory.parent); 
-                } else { 
-                    currentCategory = null; 
+                if (currentCategory.parent) {
+                    currentCategory = await Category.findById(currentCategory.parent);
+                } else {
+                    currentCategory = null;
                 }
+                depth++;
             }
             return path;
         };
         
-        const categoryPath = await getCategoryPath(product.category._id);
         const productObject = product.toObject();
-        productObject.categoryPath = categoryPath;
+
+        if (product.category && product.category._id) {
+            productObject.categoryPath = await getCategoryPath(product.category._id);
+        } else {
+            productObject.categoryPath = [];
+        }
+
         res.json(productObject);
+        
     } catch (err) {
         console.error(err.message);
         res.status(500).send('Server Error');
     }
 });
 
-// Validation rules for creating and updating products
 const productValidationRules = [
     body('name', 'Naam zaroori hai').not().isEmpty(),
     body('vendorId', 'Vendor zaroori hai').not().isEmpty(),
@@ -76,7 +90,6 @@ const productValidationRules = [
     body('brand', 'Brand zaroori hai').not().isEmpty(),
 ];
 
-// POST a new product
 router.post('/', upload.any(), productValidationRules, async (req, res) => {
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
@@ -85,7 +98,6 @@ router.post('/', upload.any(), productValidationRules, async (req, res) => {
 
     try {
         const { name, description, price, salePrice, category, brand, inStock, vendorId, sku, status, tags } = req.body;
-        
         let parsedVariations = req.body.variations ? JSON.parse(req.body.variations) : [];
         let mainImages = [];
         const variationImageFiles = {};
@@ -130,7 +142,6 @@ router.post('/', upload.any(), productValidationRules, async (req, res) => {
     }
 });
 
-// PUT (Update) a product
 router.put('/:id', upload.any(), productValidationRules, async (req, res) => {
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
@@ -198,7 +209,6 @@ router.put('/:id', upload.any(), productValidationRules, async (req, res) => {
     }
 });
 
-// DELETE a product
 router.delete('/:id', async (req, res) => {
     try {
         const product = await Product.findById(req.params.id);
@@ -222,9 +232,7 @@ router.delete('/:id', async (req, res) => {
             }
         }
 
-        // --- YAHAN GHALTI THEEK KARDI HAI ---
         await product.deleteOne();
-
         res.json({ msg: 'Product delete ho gaya' });
     } catch (err) {
         console.error(err.message);
@@ -232,7 +240,6 @@ router.delete('/:id', async (req, res) => {
     }
 });
 
-// PATCH a product for Quick Edit
 router.patch('/quick-edit/:id', upload.single('image'), async (req, res) => {
     try {
         const product = await Product.findById(req.params.id);
@@ -242,26 +249,20 @@ router.patch('/quick-edit/:id', upload.single('image'), async (req, res) => {
 
         const { price, inStock } = req.body;
 
-        // Price aur inStock status update karein
         if (price) {
             product.price = price;
         }
         if (inStock !== undefined) {
-            // FormData se 'true' ya 'false' string mein aata hai, usko boolean mein convert karein
             product.inStock = (inStock === 'true');
         }
 
-        // Agar nayi image upload hui hai to usko handle karein
         if (req.file) {
-            // Agar pehle se koi image mojood hai, to usko Cloudinary se delete karein
             if (product.images && product.images.length > 0 && product.images[0].public_id) {
                 await cloudinary.uploader.destroy(product.images[0].public_id);
             }
 
-            // Nayi image ko Cloudinary par upload karein
             const result = await uploadToCloudinary(req.file);
 
-            // Product ki pehli image ko nayi image se replace kar dein
             if (product.images && product.images.length > 0) {
                 product.images[0] = result;
             } else {
@@ -277,4 +278,5 @@ router.patch('/quick-edit/:id', upload.single('image'), async (req, res) => {
         res.status(500).send('Server Error');
     }
 });
+
 module.exports = router;
