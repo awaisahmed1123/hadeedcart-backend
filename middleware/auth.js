@@ -1,19 +1,21 @@
-// middleware/auth.js
 const jwt = require('jsonwebtoken');
 
 module.exports = function(req, res, next) {
-    // Header se token hasil karein
-    const token = req.header('x-auth-token');
+    // Sahi header se token hasil karein
+    const authHeader = req.header('Authorization');
 
-    // Check karein ke token mojood hai ya nahi
-    if (!token) {
-        return res.status(401).json({ msg: 'No token, authorization denied' });
+    // Check karein ke header mojood hai aur "Bearer " se shuru hota hai
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+        return res.status(401).json({ msg: 'No valid token, authorization denied' });
     }
 
-    // Token ko verify karein
     try {
+        // "Bearer " wala hissa hata kar token hasil karein
+        const token = authHeader.split(' ')[1];
+
+        // Token ko verify karein
         const decoded = jwt.verify(token, process.env.JWT_SECRET);
-        req.user = decoded.user; // Request mein user ki details add kar dein
+        req.user = decoded.user;
         next();
     } catch (err) {
         res.status(401).json({ msg: 'Token is not valid' });
