@@ -6,7 +6,7 @@ const Product = require('../models/Product.js');
 const Brand = require('../models/Brand.js');
 const Category = require('../models/Category.js');
 const upload = require('../middleware/multer.js');
-const cloudinary = require('../config/cloudinary'); // Correct way to import configured cloudinary
+const cloudinary = require('../config/cloudinary');
 
 // Helper function to upload images to Cloudinary
 const uploadToCloudinary = async (file) => {
@@ -111,7 +111,7 @@ router.post('/', upload.any(), productValidationRules, async (req, res) => {
         
         const productData = {
             name, description, category, inStock, sku, status,
-            brand: brand && mongoose.Types.ObjectId.isValid(brand) ? brand : null, // This is the corrected logic
+            brand: brand && mongoose.Types.ObjectId.isValid(brand) ? brand : null,
             vendorId,
             variations: parsedVariations,
             tags: tags ? JSON.parse(tags) : [],
@@ -179,7 +179,7 @@ router.put('/:id', upload.any(), productValidationRules, async (req, res) => {
         product.name = name;
         product.description = description;
         product.category = category;
-        product.brand = brand && mongoose.Types.ObjectId.isValid(brand) ? brand : null; // This is the corrected logic
+        product.brand = brand && mongoose.Types.ObjectId.isValid(brand) ? brand : null;
         product.inStock = inStock;
         product.vendorId = vendorId;
         product.sku = sku;
@@ -202,7 +202,9 @@ router.put('/:id', upload.any(), productValidationRules, async (req, res) => {
 router.delete('/:id', async (req, res) => {
     try {
         const product = await Product.findById(req.params.id);
-        if (!product) return res.status(404).json({ msg: 'Product nahi mila' });
+        if (!product) {
+            return res.status(404).json({ msg: 'Product nahi mila' });
+        }
 
         if (product.images && product.images.length > 0) {
             const publicIds = product.images.map(img => img.public_id).filter(id => id);
@@ -220,7 +222,9 @@ router.delete('/:id', async (req, res) => {
             }
         }
 
-        await product.findByIdAndDelete(req.params.id);
+        // --- YAHAN GHALTI THEEK KARDI HAI ---
+        await product.deleteOne();
+
         res.json({ msg: 'Product delete ho gaya' });
     } catch (err) {
         console.error(err.message);
@@ -228,4 +232,49 @@ router.delete('/:id', async (req, res) => {
     }
 });
 
+// PATCH a product for Quick Edit
+router.patch('/quick-edit/:id', upload.single('image'), async (req, res) => {
+    try {
+        const product = await Product.findById(req.params.id);
+        if (!product) {
+            return res.status(404).json({ msg: 'Product nahi mila' });
+        }
+
+        const { price, inStock } = req.body;
+
+        // Price aur inStock status update karein
+        if (price) {
+            product.price = price;
+        }
+        if (inStock !== undefined) {
+            // FormData se 'true' ya 'false' string mein aata hai, usko boolean mein convert karein
+            product.inStock = (inStock === 'true');
+        }
+
+        // Agar nayi image upload hui hai to usko handle karein
+        if (req.file) {
+            // Agar pehle se koi image mojood hai, to usko Cloudinary se delete karein
+            if (product.images && product.images.length > 0 && product.images[0].public_id) {
+                await cloudinary.uploader.destroy(product.images[0].public_id);
+            }
+
+            // Nayi image ko Cloudinary par upload karein
+            const result = await uploadToCloudinary(req.file);
+
+            // Product ki pehli image ko nayi image se replace kar dein
+            if (product.images && product.images.length > 0) {
+                product.images[0] = result;
+            } else {
+                product.images = [result];
+            }
+        }
+        
+        await product.save();
+        res.json({ msg: 'Product kamyabi se update ho gaya', product });
+
+    } catch (err) {
+        console.error("Quick Edit mein error:", err.message);
+        res.status(500).send('Server Error');
+    }
+});
 module.exports = router;
