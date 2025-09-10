@@ -7,6 +7,9 @@ const Brand = require('../models/Brand.js');
 const Category = require('../models/Category.js');
 const upload = require('../middleware/multer.js');
 const cloudinary = require('../config/cloudinary');
+const csv = require('csv-parser');
+const { Readable } = require('stream');
+const auth = require('../middleware/auth.js');
 
 const uploadToCloudinary = async (file) => {
     const b64 = Buffer.from(file.buffer).toString("base64");
@@ -50,11 +53,9 @@ router.get('/:id', async (req, res) => {
         const getCategoryPath = async (categoryId) => {
             let path = [];
             if (!categoryId) return path;
-
             let currentCategory = await Category.findById(categoryId);
             let depth = 0;
             const maxDepth = 10; 
-
             while (currentCategory && depth < maxDepth) {
                 path.unshift(currentCategory);
                 if (currentCategory.parent) {
@@ -68,15 +69,12 @@ router.get('/:id', async (req, res) => {
         };
         
         const productObject = product.toObject();
-
         if (product.category && product.category._id) {
             productObject.categoryPath = await getCategoryPath(product.category._id);
         } else {
             productObject.categoryPath = [];
         }
-
         res.json(productObject);
-        
     } catch (err) {
         console.error(err.message);
         res.status(500).send('Server Error');
@@ -95,13 +93,11 @@ router.post('/', upload.any(), productValidationRules, async (req, res) => {
     if (!errors.isEmpty()) {
         return res.status(400).json({ errors: errors.array() });
     }
-
     try {
         const { name, description, price, salePrice, category, brand, inStock, vendorId, sku, status, tags } = req.body;
         let parsedVariations = req.body.variations ? JSON.parse(req.body.variations) : [];
         let mainImages = [];
         const variationImageFiles = {};
-
         if (req.files && req.files.length > 0) {
             for (const file of req.files) {
                 if (file.fieldname === 'images') {
@@ -113,14 +109,12 @@ router.post('/', upload.any(), productValidationRules, async (req, res) => {
                 }
             }
         }
-
         for (let i = 0; i < parsedVariations.length; i++) {
             if (variationImageFiles[i]) {
                 const result = await uploadToCloudinary(variationImageFiles[i]);
                 parsedVariations[i].image = result;
             }
         }
-        
         const productData = {
             name, description, category, inStock, sku, status,
             brand: brand && mongoose.Types.ObjectId.isValid(brand) ? brand : null,
@@ -129,10 +123,8 @@ router.post('/', upload.any(), productValidationRules, async (req, res) => {
             tags: tags ? JSON.parse(tags) : [],
             images: mainImages,
         };
-
         if (price) productData.price = price;
         if (salePrice) productData.salePrice = salePrice;
-
         const newProduct = new Product(productData);
         const product = await newProduct.save();
         res.status(201).json(product);
@@ -147,13 +139,10 @@ router.put('/:id', upload.any(), productValidationRules, async (req, res) => {
     if (!errors.isEmpty()) {
         return res.status(400).json({ errors: errors.array() });
     }
-
     try {
         const product = await Product.findById(req.params.id);
         if (!product) return res.status(404).json({ msg: 'Product nahi mila' });
-
         const { name, description, price, salePrice, category, brand, inStock, vendorId, sku, status, tags, variations, imagesToDelete } = req.body;
-
         if (imagesToDelete) {
             const publicIdsToDelete = JSON.parse(imagesToDelete);
             if (publicIdsToDelete.length > 0) {
@@ -161,10 +150,8 @@ router.put('/:id', upload.any(), productValidationRules, async (req, res) => {
                 product.images = product.images.filter(img => !publicIdsToDelete.includes(img.public_id));
             }
         }
-        
         let parsedVariations = variations ? JSON.parse(variations) : product.variations;
         const variationImageFiles = {};
-
         if (req.files && req.files.length > 0) {
            for (const file of req.files) {
                if(file.fieldname === 'images'){
@@ -176,7 +163,6 @@ router.put('/:id', upload.any(), productValidationRules, async (req, res) => {
                }
            }
         }
-        
         for (let i = 0; i < parsedVariations.length; i++) {
             if (variationImageFiles[i]) {
                 if (parsedVariations[i].image && parsedVariations[i].image.public_id) {
@@ -186,7 +172,6 @@ router.put('/:id', upload.any(), productValidationRules, async (req, res) => {
                 parsedVariations[i].image = result;
             }
         }
-        
         product.name = name;
         product.description = description;
         product.category = category;
@@ -199,10 +184,8 @@ router.put('/:id', upload.any(), productValidationRules, async (req, res) => {
         product.variations = parsedVariations;
         product.price = price ? price : undefined;
         product.salePrice = salePrice ? salePrice : undefined;
-        
         await product.save();
         res.json(product);
-
     } catch (err) {
         console.error("Product update karte waqt error:", err.message);
         res.status(500).json({ message: 'Server Error: ' + err.message });
@@ -215,14 +198,12 @@ router.delete('/:id', async (req, res) => {
         if (!product) {
             return res.status(404).json({ msg: 'Product nahi mila' });
         }
-
         if (product.images && product.images.length > 0) {
             const publicIds = product.images.map(img => img.public_id).filter(id => id);
             if (publicIds.length > 0) {
                 await cloudinary.api.delete_resources(publicIds);
             }
         }
-        
         if (product.variations && product.variations.length > 0) {
             const variationImagePublicIds = product.variations
                 .map(v => v.image && v.image.public_id)
@@ -231,7 +212,6 @@ router.delete('/:id', async (req, res) => {
                 await cloudinary.api.delete_resources(variationImagePublicIds);
             }
         }
-
         await product.deleteOne();
         res.json({ msg: 'Product delete ho gaya' });
     } catch (err) {
@@ -246,37 +226,81 @@ router.patch('/quick-edit/:id', upload.single('image'), async (req, res) => {
         if (!product) {
             return res.status(404).json({ msg: 'Product nahi mila' });
         }
-
         const { price, inStock } = req.body;
-
         if (price) {
             product.price = price;
         }
         if (inStock !== undefined) {
             product.inStock = (inStock === 'true');
         }
-
         if (req.file) {
             if (product.images && product.images.length > 0 && product.images[0].public_id) {
                 await cloudinary.uploader.destroy(product.images[0].public_id);
             }
-
             const result = await uploadToCloudinary(req.file);
-
             if (product.images && product.images.length > 0) {
                 product.images[0] = result;
             } else {
                 product.images = [result];
             }
         }
-        
         await product.save();
         res.json({ msg: 'Product kamyabi se update ho gaya', product });
-
     } catch (err) {
         console.error("Quick Edit mein error:", err.message);
         res.status(500).send('Server Error');
     }
+});
+
+// NAYI CSV IMPORT WALI ROUTE
+router.post('/import', [auth, upload.single('file')], async (req, res) => {
+    if (!req.file) {
+        return res.status(400).json({ msg: 'CSV file zaroori hai' });
+    }
+
+    const products = [];
+    const buffer = req.file.buffer;
+    const stream = Readable.from(buffer.toString('utf8'));
+
+    stream
+        .pipe(csv())
+        .on('data', (row) => {
+            const productData = {
+                name: row.name,
+                description: row.description,
+                price: parseFloat(row.price),
+                salePrice: row.salePrice ? parseFloat(row.salePrice) : undefined,
+                sku: row.sku,
+                inStock: row.inStock ? row.inStock.toLowerCase() === 'true' : true,
+                status: row.status || 'Published',
+                category: row.category,
+                brand: row.brand,
+                vendorId: row.vendorId,
+                images: row.images ? row.images.split(',').map(url => ({ public_id: 'csv_import', url: url.trim() })) : [],
+                tags: row.tags ? row.tags.split(',').map(tag => tag.trim()) : [],
+            };
+            
+            if (productData.name) {
+                products.push(productData);
+            }
+        })
+        .on('end', async () => {
+            try {
+                if (products.length > 0) {
+                    await Product.insertMany(products);
+                    res.status(201).json({ msg: `${products.length} products kamyabi se import ho gaye!` });
+                } else {
+                    res.status(400).json({ msg: 'CSV file mein koi valid product nahi mila.' });
+                }
+            } catch (err) {
+                console.error("CSV import ke waqt database error:", err);
+                res.status(500).json({ msg: 'Database mein save karte waqt error hua.', error: err.message });
+            }
+        })
+        .on('error', (err) => {
+            console.error("CSV parse karte waqt error:", err);
+            res.status(500).json({ msg: 'CSV file parhne mein error hua.', error: err.message });
+        });
 });
 
 module.exports = router;
