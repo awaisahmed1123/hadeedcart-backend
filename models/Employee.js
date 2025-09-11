@@ -27,7 +27,9 @@ const EmployeeSchema = new mongoose.Schema({
             'manage_brands',
             'manage_vendors',
             'manage_orders',
-            'manage_employees'
+            'manage_employees',
+            'manage_banners',
+            'manage_media'
         ]
     }],
     role: {
