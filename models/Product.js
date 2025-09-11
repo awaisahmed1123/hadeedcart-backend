@@ -6,7 +6,7 @@ const VariationSchema = new mongoose.Schema({
     price: { type: Number, required: true },
     salePrice: { type: Number },
     stock: { type: Number, default: 0, required: true },
-    sku: { type: String },
+    sku: { type: String, trim: true },
     image: {
         public_id: { type: String },
         url: { type: String }
@@ -16,14 +16,12 @@ const VariationSchema = new mongoose.Schema({
 const ProductSchema = new mongoose.Schema({
     name: { type: String, required: true, trim: true },
     description: { type: String, trim: true },
-    
-    productType: { // <-- NAYI FIELD ADD KI GAYI HAI
+    productType: {
         type: String,
         enum: ['Simple', 'Variable'],
         default: 'Simple',
         required: true
     },
-    
     price: { type: Number }, 
     salePrice: {
         type: Number,
@@ -37,7 +35,7 @@ const ProductSchema = new mongoose.Schema({
             message: 'Sale price, asal price se kam honi chahiye.'
         }
     },
-    sku: { type: String, unique: true, sparse: true },
+    sku: { type: String, unique: true, sparse: true, trim: true },
     inStock: { type: Boolean, default: true },
     images: [{
         public_id: { type: String },
@@ -63,5 +61,20 @@ const ProductSchema = new mongoose.Schema({
 }, { timestamps: true });
 
 ProductSchema.index({ name: 'text', description: 'text', tags: 'text' });
+
+// YEH ZAROORI HAI: Khali SKU ko null mein convert karega
+ProductSchema.pre('save', function(next) {
+    if (this.sku === '') {
+        this.sku = null;
+    }
+    if (this.variations && this.variations.length > 0) {
+        this.variations.forEach(variation => {
+            if (variation.sku === '') {
+                variation.sku = null;
+            }
+        });
+    }
+    next();
+});
 
 module.exports = mongoose.model('Product', ProductSchema);
