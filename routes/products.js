@@ -3,43 +3,53 @@ const router = express.Router();
 const mongoose = require('mongoose');
 const { body, validationResult } = require('express-validator');
 const Product = require('../models/Product.js');
-const Brand = require('../models/Brand.js');
 const Category = require('../models/Category.js');
 const upload = require('../middleware/multer.js');
 const cloudinary = require('../config/cloudinary');
+const auth = require('../middleware/auth.js');
+const { Parser } = require('json2csv');
 const csv = require('csv-parser');
 const { Readable } = require('stream');
-const auth = require('../middleware/auth.js');
-const { Parser } = require('json2csv'); // Naya package
 
+// Cloudinary par file upload karne ka helper function
 const uploadToCloudinary = async (file) => {
     const b64 = Buffer.from(file.buffer).toString("base64");
-    let dataURI = "data:" + file.mimetype + ";base64," + b64;
+    const dataURI = `data:${file.mimetype};base64,${b64}`;
     const result = await cloudinary.uploader.upload(dataURI, { folder: "hadeedcart_products" });
     return { public_id: result.public_id, url: result.secure_url };
 };
 
+// GET all products (with pagination and filtering)
 router.get('/', async (req, res) => {
     try {
         const page = parseInt(req.query.page) || 1;
         const limit = parseInt(req.query.limit) || 10;
         const { search, category, vendor, status, inStock } = req.query;
+        
         let query = {};
         if (search) query.$text = { $search: search };
         if (category) query.category = category;
         if (vendor) query.vendorId = vendor;
         if (status) query.status = status;
         if (inStock) query.inStock = inStock === 'true';
-        
-        const products = await Product.find(query).populate('brand', 'name').populate('vendorId', 'shopName').populate('category', 'name').sort({ createdAt: -1 }).skip((page - 1) * limit).limit(limit);
+
+        const products = await Product.find(query)
+            .populate('brand', 'name')
+            .populate('vendorId', 'shopName')
+            .populate('category', 'name')
+            .sort({ createdAt: -1 })
+            .skip((page - 1) * limit)
+            .limit(limit);
+            
         const totalProducts = await Product.countDocuments(query);
         res.json({ products, totalPages: Math.ceil(totalProducts / limit), currentPage: page });
     } catch (err) {
-        console.error(err.message);
+        console.error("Products fetch karte waqt error:", err.message);
         res.status(500).send('Server Error');
     }
 });
 
+// GET a single product by ID
 router.get('/:id', async (req, res) => {
     try {
         const product = await Product.findById(req.params.id)
@@ -47,173 +57,216 @@ router.get('/:id', async (req, res) => {
             .populate('vendorId', 'shopName')
             .populate('category');
         if (!product) { return res.status(404).json({ msg: 'Product nahi mila' }); }
+        
         const getCategoryPath = async (categoryId) => {
             let path = [];
             if (!categoryId) return path;
             let currentCategory = await Category.findById(categoryId);
             let depth = 0;
-            const maxDepth = 10; 
-            while (currentCategory && depth < maxDepth) {
+            while (currentCategory && depth < 10) {
                 path.unshift(currentCategory);
-                if (currentCategory.parent) {
-                    currentCategory = await Category.findById(currentCategory.parent);
-                } else {
-                    currentCategory = null;
-                }
+                currentCategory = currentCategory.parent ? await Category.findById(currentCategory.parent) : null;
                 depth++;
             }
             return path;
         };
+
         const productObject = product.toObject();
-        if (product.category && product.category._id) {
-            productObject.categoryPath = await getCategoryPath(product.category._id);
-        } else {
-            productObject.categoryPath = [];
-        }
+        productObject.categoryPath = await getCategoryPath(product.category?._id);
         res.json(productObject);
     } catch (err) {
-        console.error(err.message);
+        console.error("Single Product fetch karte waqt error:", err.message);
         res.status(500).send('Server Error');
     }
 });
 
+// Validation rules for creating/updating a product
 const productValidationRules = [
     body('name', 'Naam zaroori hai').not().isEmpty(),
-    body('vendorId', 'Vendor zaroori hai').not().isEmpty(),
-    body('category', 'Category zaroori hai').not().isEmpty(),
-    body('brand', 'Brand zaroori hai').not().isEmpty(),
+    body('vendorId', 'Vendor zaroori hai').isMongoId(),
+    body('category', 'Category zaroori hai').isMongoId(),
+    body('brand', 'Brand zaroori hai').isMongoId(),
 ];
 
+// POST - Create a new product
 router.post('/', [auth, upload.any()], productValidationRules, async (req, res) => {
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
         return res.status(400).json({ errors: errors.array() });
     }
+
     try {
-        const { name, description, price, salePrice, category, brand, inStock, vendorId, sku, status, tags } = req.body;
-        let parsedVariations = req.body.variations ? JSON.parse(req.body.variations) : [];
-        let mainImages = [];
-        const variationImageFiles = {};
+        let finalImages = [];
+        let parsedVariations = [];
+
+        // ✅ FIX: Media library se aayi hui images ko process karna
+        if (req.body.images) {
+            finalImages = JSON.parse(req.body.images);
+        }
+
+        // Variations ko process karna
+        if (req.body.variations) {
+            parsedVariations = JSON.parse(req.body.variations);
+        }
+
+        // Nayee upload hui files ko process karna
         if (req.files && req.files.length > 0) {
+            const variationImageFiles = {};
+            const mainImageFiles = [];
+
+            // Pehle files ko alag alag karein
             for (const file of req.files) {
-                if (file.fieldname === 'images') {
-                    const result = await uploadToCloudinary(file);
-                    mainImages.push(result);
-                } else if (file.fieldname.startsWith('variation_image_')) {
+                if (file.fieldname.startsWith('variation_image_')) {
                     const index = file.fieldname.split('_')[2];
                     variationImageFiles[index] = file;
+                } else if (file.fieldname === 'new_images') {
+                    mainImageFiles.push(file);
+                }
+            }
+
+            // Phir sab ko Cloudinary par upload karein
+            const mainImageUploads = mainImageFiles.map(file => uploadToCloudinary(file));
+            const uploadedMainImages = await Promise.all(mainImageUploads);
+            finalImages.push(...uploadedMainImages);
+
+            for (let i = 0; i < parsedVariations.length; i++) {
+                if (variationImageFiles[i]) {
+                    const result = await uploadToCloudinary(variationImageFiles[i]);
+                    parsedVariations[i].image = result;
                 }
             }
         }
-        for (let i = 0; i < parsedVariations.length; i++) {
-            if (variationImageFiles[i]) {
-                const result = await uploadToCloudinary(variationImageFiles[i]);
-                parsedVariations[i].image = result;
-            }
-        }
-        const productData = { name, description, category, inStock, sku, status, brand: brand && mongoose.Types.ObjectId.isValid(brand) ? brand : null, vendorId, variations: parsedVariations, tags: tags ? JSON.parse(tags) : [], images: mainImages };
-        if (price) productData.price = price;
-        if (salePrice) productData.salePrice = salePrice;
+        
+        const productData = {
+            ...req.body,
+            tags: req.body.tags ? JSON.parse(req.body.tags) : [],
+            images: finalImages,
+            variations: parsedVariations,
+        };
+
         const newProduct = new Product(productData);
-        const product = await newProduct.save();
-        res.status(201).json(product);
+        await newProduct.save();
+        res.status(201).json(newProduct);
+
     } catch (err) {
-        console.error("Product save karte waqt error:", err.message);
+        console.error("Product create karte waqt error:", err);
+        // Mongoose validation error ko saaf tareeqe se bhejein
+        if (err.name === 'ValidationError') {
+            return res.status(400).json({ message: err.message });
+        }
         res.status(500).json({ message: 'Server Error: ' + err.message });
     }
 });
 
+// PUT - Update an existing product
 router.put('/:id', [auth, upload.any()], productValidationRules, async (req, res) => {
     const errors = validationResult(req);
     if (!errors.isEmpty()) { return res.status(400).json({ errors: errors.array() }); }
+
     try {
         const product = await Product.findById(req.params.id);
         if (!product) return res.status(404).json({ msg: 'Product nahi mila' });
-        const { name, description, price, salePrice, category, brand, inStock, vendorId, sku, status, tags, variations, imagesToDelete } = req.body;
-        if (imagesToDelete) {
-            const publicIdsToDelete = JSON.parse(imagesToDelete);
+
+        let finalImages = [];
+        let parsedVariations = req.body.variations ? JSON.parse(req.body.variations) : product.variations;
+        
+        // ✅ FIX: Media library se aayi hui images ko process karna
+        if (req.body.images) {
+             finalImages = JSON.parse(req.body.images);
+        } else {
+             finalImages = product.images; // Agar nahi aayin to purani rakhein
+        }
+        
+        // Delete karne wali images ko handle karna
+        if (req.body.imagesToDelete) {
+            const publicIdsToDelete = JSON.parse(req.body.imagesToDelete);
             if (publicIdsToDelete.length > 0) {
                 await cloudinary.api.delete_resources(publicIdsToDelete);
-                product.images = product.images.filter(img => !publicIdsToDelete.includes(img.public_id));
             }
         }
-        let parsedVariations = variations ? JSON.parse(variations) : product.variations;
-        const variationImageFiles = {};
+
+        // Nayee upload hui files ko process karna
         if (req.files && req.files.length > 0) {
-           for (const file of req.files) {
-               if(file.fieldname === 'images'){
-                   const result = await uploadToCloudinary(file);
-                   product.images.push(result);
-               } else if (file.fieldname.startsWith('variation_image_')) {
-                   const index = file.fieldname.split('_')[2];
-                   variationImageFiles[index] = file;
-               }
-           }
-        }
-        for (let i = 0; i < parsedVariations.length; i++) {
-            if (variationImageFiles[i]) {
-                if (parsedVariations[i].image && parsedVariations[i].image.public_id) {
-                    await cloudinary.uploader.destroy(parsedVariations[i].image.public_id);
+            const variationImageFiles = {};
+            const mainImageFiles = [];
+
+            for (const file of req.files) {
+                 if (file.fieldname.startsWith('variation_image_')) {
+                    const index = file.fieldname.split('_')[2];
+                    variationImageFiles[index] = file;
+                } else if (file.fieldname === 'new_images') {
+                    mainImageFiles.push(file);
                 }
-                const result = await uploadToCloudinary(variationImageFiles[i]);
-                parsedVariations[i].image = result;
+            }
+            
+            const mainImageUploads = mainImageFiles.map(file => uploadToCloudinary(file));
+            const uploadedMainImages = await Promise.all(mainImageUploads);
+            finalImages.push(...uploadedMainImages);
+
+            for (let i = 0; i < parsedVariations.length; i++) {
+                if (variationImageFiles[i]) {
+                    if (parsedVariations[i].image && parsedVariations[i].image.public_id) {
+                        await cloudinary.uploader.destroy(parsedVariations[i].image.public_id);
+                    }
+                    const result = await uploadToCloudinary(variationImageFiles[i]);
+                    parsedVariations[i].image = result;
+                }
             }
         }
-        product.name = name; product.description = description; product.category = category; product.brand = brand && mongoose.Types.ObjectId.isValid(brand) ? brand : null; product.inStock = inStock; product.vendorId = vendorId; product.sku = sku; product.status = status; product.tags = tags ? JSON.parse(tags) : []; product.variations = parsedVariations; product.price = price ? price : undefined; product.salePrice = salePrice ? salePrice : undefined;
+
+        // Sab fields ko update karein
+        Object.assign(product, req.body, {
+            tags: req.body.tags ? JSON.parse(req.body.tags) : product.tags,
+            images: finalImages,
+            variations: parsedVariations,
+        });
+        
+        product.price = req.body.price ? req.body.price : undefined;
+        product.salePrice = req.body.salePrice ? req.body.salePrice : undefined;
+
         await product.save();
         res.json(product);
+
     } catch (err) {
-        console.error("Product update karte waqt error:", err.message);
+        console.error("Product update karte waqt error:", err);
+         if (err.name === 'ValidationError') {
+            return res.status(400).json({ message: err.message });
+        }
         res.status(500).json({ message: 'Server Error: ' + err.message });
     }
 });
 
+// DELETE a product
 router.delete('/:id', auth, async (req, res) => {
     try {
         const product = await Product.findById(req.params.id);
         if (!product) { return res.status(404).json({ msg: 'Product nahi mila' }); }
+        
+        const publicIdsToDelete = [];
         if (product.images && product.images.length > 0) {
-            const publicIds = product.images.map(img => img.public_id).filter(id => id);
-            if (publicIds.length > 0) { await cloudinary.api.delete_resources(publicIds); }
+            product.images.forEach(img => img.public_id && publicIdsToDelete.push(img.public_id));
         }
         if (product.variations && product.variations.length > 0) {
-            const variationImagePublicIds = product.variations.map(v => v.image && v.image.public_id).filter(id => id);
-            if (variationImagePublicIds.length > 0) { await cloudinary.api.delete_resources(variationImagePublicIds); }
+            product.variations.forEach(v => v.image && v.image.public_id && publicIdsToDelete.push(v.image.public_id));
         }
+        
+        if (publicIdsToDelete.length > 0) {
+            try {
+                await cloudinary.api.delete_resources(publicIdsToDelete);
+            } catch (cloudinaryErr) {
+                console.error("Cloudinary se image delete karte waqt error:", cloudinaryErr.message);
+            }
+        }
+        
         await product.deleteOne();
         res.json({ msg: 'Product delete ho gaya' });
     } catch (err) {
-        console.error(err.message);
+        console.error("Product delete karte waqt error:", err.message);
         res.status(500).send('Server Error');
     }
 });
 
-router.patch('/quick-edit/:id', [auth, upload.single('image')], async (req, res) => {
-    try {
-        const product = await Product.findById(req.params.id);
-        if (!product) { return res.status(404).json({ msg: 'Product nahi mila' }); }
-        const { price, inStock } = req.body;
-        if (price) { product.price = price; }
-        if (inStock !== undefined) { product.inStock = (inStock === 'true'); }
-        if (req.file) {
-            if (product.images && product.images.length > 0 && product.images[0].public_id) {
-                await cloudinary.uploader.destroy(product.images[0].public_id);
-            }
-            const result = await uploadToCloudinary(req.file);
-            if (product.images && product.images.length > 0) {
-                product.images[0] = result;
-            } else {
-                product.images = [result];
-            }
-        }
-        await product.save();
-        res.json({ msg: 'Product kamyabi se update ho gaya', product });
-    } catch (err) {
-        console.error("Quick Edit mein error:", err.message);
-        res.status(500).send('Server Error');
-    }
-});
-
+// CSV Import Route
 router.post('/import', [auth, upload.single('file')], async (req, res) => {
     if (!req.file) { return res.status(400).json({ msg: 'CSV file zaroori hai' }); }
     const products = [];
@@ -225,7 +278,7 @@ router.post('/import', [auth, upload.single('file')], async (req, res) => {
     }).on('end', async () => {
         try {
             if (products.length > 0) {
-                await Product.insertMany(products);
+                await Product.insertMany(products, { ordered: false });
                 res.status(201).json({ msg: `${products.length} products kamyabi se import ho gaye!` });
             } else {
                 res.status(400).json({ msg: 'CSV file mein koi valid product nahi mila.' });
@@ -240,10 +293,11 @@ router.post('/import', [auth, upload.single('file')], async (req, res) => {
     });
 });
 
-// NAYI CSV EXPORT WALI ROUTE
-router.get('/export', auth, async (req, res) => {
+// CSV Export Route
+router.get('/export/csv', auth, async (req, res) => {
     try {
         const products = await Product.find({}).populate('category').populate('brand', 'name').populate('vendorId', 'shopName');
+        
         const getCategoryPath = async (category) => {
             let path = { superCategory: '', mainCategory: '', subCategory: '' };
             if (!category) return path;
@@ -260,6 +314,7 @@ router.get('/export', auth, async (req, res) => {
             if (hierarchy.length > 0) path.superCategory = hierarchy.pop() || '';
             return path;
         };
+
         let flattenedProducts = [];
         for (const product of products) {
             const categoryPath = await getCategoryPath(product.category);
@@ -276,9 +331,9 @@ router.get('/export', auth, async (req, res) => {
                 sub_category: categoryPath.subCategory,
                 tags: product.tags?.join(','),
                 main_images: product.images?.map(img => img.url).join(','),
-                price: product.price, // Base price for simple products
-                sale_price: product.salePrice, // Base sale price
-                stock: product.inStock ? 'In Stock' : 'Out of Stock' // Base stock status
+                price: product.price,
+                sale_price: product.salePrice,
+                stock: product.inStock ? 'In Stock' : 'Out of Stock'
             };
             if (product.variations && product.variations.length > 0) {
                 for (const variation of product.variations) {
@@ -298,6 +353,7 @@ router.get('/export', auth, async (req, res) => {
                 flattenedProducts.push({ ...commonData, type: 'simple' });
             }
         }
+        
         const json2csvParser = new Parser();
         const csvData = json2csvParser.parse(flattenedProducts);
         res.header('Content-Type', 'text/csv');
