@@ -13,6 +13,14 @@ const CategorySchema = new mongoose.Schema({
     default: null,
     index: true,
   },
+  image: {
+    public_id: {
+      type: String,
+    },
+    secure_url: {
+      type: String,
+    },
+  },
 }, { timestamps: true });
 
 module.exports = mongoose.model('Category', CategorySchema);

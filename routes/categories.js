@@ -3,17 +3,26 @@ const router = express.Router();
 const { body, validationResult } = require('express-validator');
 const Category = require('../models/Category');
 
-// GET all categories (Final, Robust Version with parent ID filtering)
+// GET all categories (Updated with filtering logic)
 router.get('/', async (req, res) => {
   try {
-    const { parent } = req.query; // Hum ab direct 'parent' ID le rahe hain
+    const { parentName, hasImage } = req.query;
     let query = {};
 
-    if (parent) {
-      query.parent = parent; // Query mein parent ID daal di
-    } else {
-      // Agar koi parent ID na de, to sirf super categories dikhayein (jinka koi parent nahi)
-      query.parent = null;
+    if (hasImage === 'true') {
+      query.image = { $ne: null, $exists: true };
+    }
+
+    if (parentName) {
+      const parentCategory = await Category.findOne({ 
+        name: { $regex: new RegExp(`^${parentName}$`, 'i') } 
+      });
+      
+      if (parentCategory) {
+        query.parent = parentCategory._id;
+      } else {
+        return res.status(200).json([]);
+      }
     }
 
     const categories = await Category.find(query).sort({ name: 1 });
@@ -24,7 +33,7 @@ router.get('/', async (req, res) => {
   }
 });
 
-// POST a new category
+// POST a new category (Updated to handle image)
 router.post('/', [ body('name', 'Naam zaroori hai').not().isEmpty().trim() ], async (req, res) => {
     const errors = validationResult(req);
     if (!errors.isEmpty()) return res.status(400).json({ errors: errors.array() });
@@ -40,7 +49,7 @@ router.post('/', [ body('name', 'Naam zaroori hai').not().isEmpty().trim() ], as
     } catch (err) { res.status(500).send('Server Error'); }
 });
 
-// PUT (Update) a category by ID
+// PUT (Update) a category by ID (Updated to handle image)
 router.put('/:id', [ body('name', 'Naam zaroori hai').not().isEmpty().trim() ], async (req, res) => {
     const errors = validationResult(req);
     if (!errors.isEmpty()) return res.status(400).json({ errors: errors.array() });
