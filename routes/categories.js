@@ -3,27 +3,29 @@ const router = express.Router();
 const { body, validationResult } = require('express-validator');
 const Category = require('../models/Category');
 
-// GET all categories (Updated with filtering logic)
+// GET all categories (FINAL, CORRECTED VERSION)
 router.get('/', async (req, res) => {
   try {
-    const { parentName, hasImage } = req.query;
-    let query = {};
+    const { parentName } = req.query;
+    let query = {}; // Shuru mein query khali hai
 
-    if (hasImage === 'true') {
-      query.image = { $ne: null, $exists: true };
-    }
-
+    // Agar Flutter App se parentName aa raha hai
     if (parentName) {
+      // Us naam ki parent category dhoondein (capital/small harf ko ignore karke)
       const parentCategory = await Category.findOne({ 
         name: { $regex: new RegExp(`^${parentName}$`, 'i') } 
       });
       
       if (parentCategory) {
+        // Agar parent mil jaye, to uske bachon ko dhoondne ke liye query banayein
         query.parent = parentCategory._id;
       } else {
+        // Agar parent na mile, to khali result bhejein
         return res.status(200).json([]);
       }
     }
+    // Agar koi parentName nahi hai (maslan Admin Panel se request), 
+    // to query khali rahegi aur saari categories fetch hongi.
 
     const categories = await Category.find(query).sort({ name: 1 });
     res.status(200).json(categories);
@@ -33,7 +35,7 @@ router.get('/', async (req, res) => {
   }
 });
 
-// POST a new category (Updated to handle image)
+// POST a new category
 router.post('/', [ body('name', 'Naam zaroori hai').not().isEmpty().trim() ], async (req, res) => {
     const errors = validationResult(req);
     if (!errors.isEmpty()) return res.status(400).json({ errors: errors.array() });
@@ -49,7 +51,7 @@ router.post('/', [ body('name', 'Naam zaroori hai').not().isEmpty().trim() ], as
     } catch (err) { res.status(500).send('Server Error'); }
 });
 
-// PUT (Update) a category by ID (Updated to handle image)
+// PUT (Update) a category by ID
 router.put('/:id', [ body('name', 'Naam zaroori hai').not().isEmpty().trim() ], async (req, res) => {
     const errors = validationResult(req);
     if (!errors.isEmpty()) return res.status(400).json({ errors: errors.array() });
