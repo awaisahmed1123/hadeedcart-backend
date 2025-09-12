@@ -19,13 +19,12 @@ const uploadToCloudinary = async (file) => {
     return { public_id: result.public_id, url: result.secure_url };
 };
 
-// GET all products (with pagination and filtering)
+// GET all products
 router.get('/', async (req, res) => {
     try {
         const page = parseInt(req.query.page) || 1;
         const limit = parseInt(req.query.limit) || 10;
         const { search, category, vendor, status, inStock } = req.query;
-        
         let query = {};
         if (search) query.$text = { $search: search };
         if (category) query.category = category;
@@ -33,14 +32,7 @@ router.get('/', async (req, res) => {
         if (status) query.status = status;
         if (inStock) query.inStock = inStock === 'true';
 
-        const products = await Product.find(query)
-            .populate('brand', 'name')
-            .populate('vendorId', 'shopName')
-            .populate('category', 'name')
-            .sort({ createdAt: -1 })
-            .skip((page - 1) * limit)
-            .limit(limit);
-            
+        const products = await Product.find(query).populate('brand', 'name').populate('vendorId', 'shopName').populate('category', 'name').sort({ createdAt: -1 }).skip((page - 1) * limit).limit(limit);
         const totalProducts = await Product.countDocuments(query);
         res.json({ products, totalPages: Math.ceil(totalProducts / limit), currentPage: page });
     } catch (err) {
@@ -52,12 +44,8 @@ router.get('/', async (req, res) => {
 // GET a single product by ID
 router.get('/:id', async (req, res) => {
     try {
-        const product = await Product.findById(req.params.id)
-            .populate('brand', 'name')
-            .populate('vendorId', 'shopName')
-            .populate('category');
+        const product = await Product.findById(req.params.id).populate('brand', 'name').populate('vendorId', 'shopName').populate('category');
         if (!product) { return res.status(404).json({ msg: 'Product nahi mila' }); }
-        
         const getCategoryPath = async (categoryId) => {
             let path = [];
             if (!categoryId) return path;
@@ -70,7 +58,6 @@ router.get('/:id', async (req, res) => {
             }
             return path;
         };
-
         const productObject = product.toObject();
         productObject.categoryPath = await getCategoryPath(product.category?._id);
         res.json(productObject);
@@ -80,7 +67,6 @@ router.get('/:id', async (req, res) => {
     }
 });
 
-// Validation rules for creating/updating a product
 const productValidationRules = [
     body('name', 'Naam zaroori hai').not().isEmpty(),
     body('vendorId', 'Vendor zaroori hai').isMongoId(),
@@ -91,30 +77,12 @@ const productValidationRules = [
 // POST - Create a new product
 router.post('/', [auth, upload.any()], productValidationRules, async (req, res) => {
     const errors = validationResult(req);
-    if (!errors.isEmpty()) {
-        return res.status(400).json({ errors: errors.array() });
-    }
-
+    if (!errors.isEmpty()) { return res.status(400).json({ errors: errors.array() }); }
     try {
-        let finalImages = [];
-        let parsedVariations = [];
-
-        // ✅ FIX: Media library se aayi hui images ko process karna
-        if (req.body.images) {
-            finalImages = JSON.parse(req.body.images);
-        }
-
-        // Variations ko process karna
-        if (req.body.variations) {
-            parsedVariations = JSON.parse(req.body.variations);
-        }
-
-        // Nayee upload hui files ko process karna
+        let finalImages = req.body.images ? JSON.parse(req.body.images) : [];
+        let parsedVariations = req.body.variations ? JSON.parse(req.body.variations) : [];
         if (req.files && req.files.length > 0) {
-            const variationImageFiles = {};
-            const mainImageFiles = [];
-
-            // Pehle files ko alag alag karein
+            const variationImageFiles = {}; const mainImageFiles = [];
             for (const file of req.files) {
                 if (file.fieldname.startsWith('variation_image_')) {
                     const index = file.fieldname.split('_')[2];
@@ -123,12 +91,9 @@ router.post('/', [auth, upload.any()], productValidationRules, async (req, res) 
                     mainImageFiles.push(file);
                 }
             }
-
-            // Phir sab ko Cloudinary par upload karein
             const mainImageUploads = mainImageFiles.map(file => uploadToCloudinary(file));
             const uploadedMainImages = await Promise.all(mainImageUploads);
             finalImages.push(...uploadedMainImages);
-
             for (let i = 0; i < parsedVariations.length; i++) {
                 if (variationImageFiles[i]) {
                     const result = await uploadToCloudinary(variationImageFiles[i]);
@@ -136,24 +101,13 @@ router.post('/', [auth, upload.any()], productValidationRules, async (req, res) 
                 }
             }
         }
-        
-        const productData = {
-            ...req.body,
-            tags: req.body.tags ? JSON.parse(req.body.tags) : [],
-            images: finalImages,
-            variations: parsedVariations,
-        };
-
+        const productData = { ...req.body, tags: req.body.tags ? JSON.parse(req.body.tags) : [], images: finalImages, variations: parsedVariations };
         const newProduct = new Product(productData);
         await newProduct.save();
         res.status(201).json(newProduct);
-
     } catch (err) {
         console.error("Product create karte waqt error:", err);
-        // Mongoose validation error ko saaf tareeqe se bhejein
-        if (err.name === 'ValidationError') {
-            return res.status(400).json({ message: err.message });
-        }
+        if (err.name === 'ValidationError') { return res.status(400).json({ message: err.message }); }
         res.status(500).json({ message: 'Server Error: ' + err.message });
     }
 });
@@ -166,18 +120,9 @@ router.put('/:id', [auth, upload.any()], productValidationRules, async (req, res
     try {
         const product = await Product.findById(req.params.id);
         if (!product) return res.status(404).json({ msg: 'Product nahi mila' });
-
-        let finalImages = [];
-        let parsedVariations = req.body.variations ? JSON.parse(req.body.variations) : product.variations;
         
-        // ✅ FIX: Media library se aayi hui images ko process karna
-        if (req.body.images) {
-             finalImages = JSON.parse(req.body.images);
-        } else {
-             finalImages = product.images; // Agar nahi aayin to purani rakhein
-        }
-        
-        // Delete karne wali images ko handle karna
+        // Step 1: Image handling (library images, new uploads, and deletions)
+        let finalImages = req.body.images ? JSON.parse(req.body.images) : product.images;
         if (req.body.imagesToDelete) {
             const publicIdsToDelete = JSON.parse(req.body.imagesToDelete);
             if (publicIdsToDelete.length > 0) {
@@ -185,11 +130,11 @@ router.put('/:id', [auth, upload.any()], productValidationRules, async (req, res
             }
         }
 
-        // Nayee upload hui files ko process karna
+        let parsedVariations = req.body.variations ? JSON.parse(req.body.variations) : product.variations;
+        
         if (req.files && req.files.length > 0) {
             const variationImageFiles = {};
             const mainImageFiles = [];
-
             for (const file of req.files) {
                  if (file.fieldname.startsWith('variation_image_')) {
                     const index = file.fieldname.split('_')[2];
@@ -198,7 +143,6 @@ router.put('/:id', [auth, upload.any()], productValidationRules, async (req, res
                     mainImageFiles.push(file);
                 }
             }
-            
             const mainImageUploads = mainImageFiles.map(file => uploadToCloudinary(file));
             const uploadedMainImages = await Promise.all(mainImageUploads);
             finalImages.push(...uploadedMainImages);
@@ -213,17 +157,30 @@ router.put('/:id', [auth, upload.any()], productValidationRules, async (req, res
                 }
             }
         }
-
-        // Sab fields ko update karein
-        Object.assign(product, req.body, {
-            tags: req.body.tags ? JSON.parse(req.body.tags) : product.tags,
-            images: finalImages,
-            variations: parsedVariations,
-        });
         
-        product.price = req.body.price ? req.body.price : undefined;
-        product.salePrice = req.body.salePrice ? req.body.salePrice : undefined;
+        // Step 2: Product ke fields ko manually update karna
+        product.name = req.body.name;
+        product.description = req.body.description;
+        product.productType = req.body.productType;
+        product.status = req.body.status;
+        product.inStock = req.body.inStock === 'true'; // Convert string to boolean
+        product.category = req.body.category;
+        product.brand = req.body.brand;
+        product.vendorId = req.body.vendorId;
+        product.sku = req.body.sku;
 
+        // String "null" ya "" ko Number mein convert karein
+        product.price = (req.body.price && req.body.price !== 'null') ? Number(req.body.price) : undefined;
+        product.salePrice = (req.body.salePrice && req.body.salePrice !== 'null') ? Number(req.body.salePrice) : undefined;
+        
+        // Stringified arrays ko parse karein
+        product.tags = req.body.tags ? JSON.parse(req.body.tags) : [];
+
+        // Updated images aur variations ko set karein
+        product.images = finalImages;
+        product.variations = parsedVariations;
+
+        // Step 3: Product save karein (ab pre-save hook priceRange update kar dega)
         await product.save();
         res.json(product);
 
@@ -241,7 +198,6 @@ router.delete('/:id', auth, async (req, res) => {
     try {
         const product = await Product.findById(req.params.id);
         if (!product) { return res.status(404).json({ msg: 'Product nahi mila' }); }
-        
         const publicIdsToDelete = [];
         if (product.images && product.images.length > 0) {
             product.images.forEach(img => img.public_id && publicIdsToDelete.push(img.public_id));
@@ -249,15 +205,9 @@ router.delete('/:id', auth, async (req, res) => {
         if (product.variations && product.variations.length > 0) {
             product.variations.forEach(v => v.image && v.image.public_id && publicIdsToDelete.push(v.image.public_id));
         }
-        
         if (publicIdsToDelete.length > 0) {
-            try {
-                await cloudinary.api.delete_resources(publicIdsToDelete);
-            } catch (cloudinaryErr) {
-                console.error("Cloudinary se image delete karte waqt error:", cloudinaryErr.message);
-            }
+            try { await cloudinary.api.delete_resources(publicIdsToDelete); } catch (cloudinaryErr) { console.error("Cloudinary se image delete karte waqt error:", cloudinaryErr.message); }
         }
-        
         await product.deleteOne();
         res.json({ msg: 'Product delete ho gaya' });
     } catch (err) {
@@ -280,9 +230,7 @@ router.post('/import', [auth, upload.single('file')], async (req, res) => {
             if (products.length > 0) {
                 await Product.insertMany(products, { ordered: false });
                 res.status(201).json({ msg: `${products.length} products kamyabi se import ho gaye!` });
-            } else {
-                res.status(400).json({ msg: 'CSV file mein koi valid product nahi mila.' });
-            }
+            } else { res.status(400).json({ msg: 'CSV file mein koi valid product nahi mila.' }); }
         } catch (err) {
             console.error("CSV import ke waqt database error:", err);
             res.status(500).json({ msg: 'Database mein save karte waqt error hua.', error: err.message });
@@ -297,13 +245,10 @@ router.post('/import', [auth, upload.single('file')], async (req, res) => {
 router.get('/export/csv', auth, async (req, res) => {
     try {
         const products = await Product.find({}).populate('category').populate('brand', 'name').populate('vendorId', 'shopName');
-        
         const getCategoryPath = async (category) => {
             let path = { superCategory: '', mainCategory: '', subCategory: '' };
             if (!category) return path;
-            let hierarchy = [];
-            let current = category;
-            let depth = 0;
+            let hierarchy = []; let current = category; let depth = 0;
             while (current && depth < 5) {
                 hierarchy.unshift(current.name);
                 current = current.parent ? await Category.findById(current.parent) : null;
@@ -314,46 +259,16 @@ router.get('/export/csv', auth, async (req, res) => {
             if (hierarchy.length > 0) path.superCategory = hierarchy.pop() || '';
             return path;
         };
-
         let flattenedProducts = [];
         for (const product of products) {
             const categoryPath = await getCategoryPath(product.category);
-            const commonData = {
-                product_id: product._id,
-                product_name: product.name,
-                description: product.description,
-                sku: product.sku,
-                status: product.status,
-                brand_name: product.brand?.name || '',
-                vendor_name: product.vendorId?.shopName || '',
-                super_category: categoryPath.superCategory,
-                main_category: categoryPath.mainCategory,
-                sub_category: categoryPath.subCategory,
-                tags: product.tags?.join(','),
-                main_images: product.images?.map(img => img.url).join(','),
-                price: product.price,
-                sale_price: product.salePrice,
-                stock: product.inStock ? 'In Stock' : 'Out of Stock'
-            };
+            const commonData = { product_id: product._id, product_name: product.name, description: product.description, sku: product.sku, status: product.status, brand_name: product.brand?.name || '', vendor_name: product.vendorId?.shopName || '', super_category: categoryPath.superCategory, main_category: categoryPath.mainCategory, sub_category: categoryPath.subCategory, tags: product.tags?.join(','), main_images: product.images?.map(img => img.url).join(','), price: product.price, sale_price: product.salePrice, stock: product.inStock ? 'In Stock' : 'Out of Stock' };
             if (product.variations && product.variations.length > 0) {
                 for (const variation of product.variations) {
-                    flattenedProducts.push({
-                        ...commonData,
-                        type: 'variation',
-                        variation_attribute: variation.attribute,
-                        variation_value: variation.value,
-                        variation_price: variation.price,
-                        variation_sale_price: variation.salePrice,
-                        variation_stock: variation.stock,
-                        variation_sku: variation.sku,
-                        variation_image: variation.image?.url || '',
-                    });
+                    flattenedProducts.push({ ...commonData, type: 'variation', variation_attribute: variation.attribute, variation_value: variation.value, variation_price: variation.price, variation_sale_price: variation.salePrice, variation_stock: variation.stock, variation_sku: variation.sku, variation_image: variation.image?.url || '' });
                 }
-            } else {
-                flattenedProducts.push({ ...commonData, type: 'simple' });
-            }
+            } else { flattenedProducts.push({ ...commonData, type: 'simple' }); }
         }
-        
         const json2csvParser = new Parser();
         const csvData = json2csvParser.parse(flattenedProducts);
         res.header('Content-Type', 'text/csv');
