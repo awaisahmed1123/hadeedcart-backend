@@ -45,6 +45,10 @@ const ProductSchema = new mongoose.Schema({
         public_id: { type: String, required: true },
         url: { type: String, required: true }
     }],
+    priceRange: {
+        min: { type: Number, default: 0 },
+        max: { type: Number, default: 0 }
+    },
     category: { type: mongoose.Schema.Types.ObjectId, ref: 'Category', required: true, index: true },
     brand: { type: mongoose.Schema.Types.ObjectId, ref: 'Brand', required: true, index: true },
     vendorId: { type: mongoose.Schema.Types.ObjectId, ref: 'Vendor', required: true, index: true },
@@ -57,14 +61,10 @@ const ProductSchema = new mongoose.Schema({
     },
     variations: {
         type: [VariationSchema],
-        // 'Variable' product ke liye kam se kam ek variation zaroori hai
         validate: {
             validator: function(v) {
                 if (this.productType === 'Variable') {
-                    // Check if it's an array and has at least one variation
                     if (!Array.isArray(v) || v.length === 0) return false;
-                    
-                    // Check if each variation has the required fields
                     for(const variation of v) {
                         if (!variation.attribute || !variation.value || variation.price == null || variation.stock == null) {
                             return false;
@@ -83,7 +83,7 @@ ProductSchema.index({ name: 'text', description: 'text', tags: 'text' });
 
 // Pre-save hook (data save hone se pehle chalta hai)
 ProductSchema.pre('save', function(next) {
-    // Khali SKU ko 'undefined' set karega taake sparse index theek kaam kare
+    // Khali SKU ko 'undefined' set karega
     if (this.isModified('sku') && this.sku === '') {
         this.sku = undefined;
     }
@@ -94,6 +94,26 @@ ProductSchema.pre('save', function(next) {
             }
         });
     }
+
+    // Price Range Calculate Karna
+    if (this.isModified('price') || this.isModified('salePrice') || this.isModified('variations')) {
+        if (this.productType === 'Simple') {
+            const price = this.salePrice || this.price;
+            this.priceRange = { min: price, max: price };
+        } else if (this.productType === 'Variable' && this.variations && this.variations.length > 0) {
+            let minPrice = Infinity;
+            let maxPrice = 0;
+            this.variations.forEach(v => {
+                const currentPrice = v.salePrice || v.price;
+                if (currentPrice < minPrice) minPrice = currentPrice;
+                if (currentPrice > maxPrice) maxPrice = currentPrice;
+            });
+            this.priceRange = { min: minPrice, max: maxPrice };
+        } else {
+            this.priceRange = { min: 0, max: 0 };
+        }
+    }
+    
     next();
 });
 
