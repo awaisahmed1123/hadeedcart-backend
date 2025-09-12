@@ -3,31 +3,30 @@ const router = express.Router();
 const { body, validationResult } = require('express-validator');
 const Category = require('../models/Category');
 
-// GET all categories (Updated with filtering logic)
+// GET all categories (Final Updated Version with Filtering)
 router.get('/', async (req, res) => {
   try {
     const { parentName, hasImage } = req.query;
     let query = {};
 
-    // Agar parentName ka filter URL mein mojood hai
-    if (parentName) {
-      // Pehle us naam ki parent category database mein dhoondein
-      const parentCategory = await Category.findOne({ name: parentName });
-      
-      if (parentCategory) {
-        // Agar parent category mil jaye, to uski ID se filter karein
-        query.parent = parentCategory._id;
-      } else {
-        // Agar us naam ki koi parent category na mile, to khali (empty) result bhejein
-        return res.status(200).json([]);
-      }
-    }
-
-    // Agar hasImage=true ka filter hai
     if (hasImage === 'true') {
       query.image = { $ne: null, $exists: true };
     }
 
+    if (parentName) {
+      // Yeh naam ko case-insensitive (chota/bara harf ignore karke) dhoondega
+      const parentCategory = await Category.findOne({ 
+        name: { $regex: new RegExp(`^${parentName}$`, 'i') } 
+      });
+      
+      if (parentCategory) {
+        query.parent = parentCategory._id;
+      } else {
+        // Agar us naam ki koi parent category na mile, to khali result bhejein
+        return res.status(200).json([]);
+      }
+    }
+    
     const categories = await Category.find(query).sort({ name: 1 });
     res.status(200).json(categories);
 
@@ -36,8 +35,6 @@ router.get('/', async (req, res) => {
   }
 });
 
-
-// --- Baaqi routes (POST, PUT, DELETE) wese hi rahenge jese aapke code mein thay ---
 
 // POST a new category
 router.post('/', [ body('name', 'Naam zaroori hai').not().isEmpty().trim() ], async (req, res) => {
